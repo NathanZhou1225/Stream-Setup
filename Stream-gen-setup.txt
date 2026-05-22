@@ -234,5 +234,159 @@ FINANCE_SECTOR_LLM_REWRITE_MAX_WORKERS=2
 FINANCE_SECTOR_LLM_REWRITE_ENABLED=1
 FINANCE_SECTOR_LLM_REWRITE_TIMEOUT_SEC=60
 
+────────────────────────────────────────
+
 #最后转化为skill
-当以上配置全部写入 .env 且 ./download_and_install.sh 退出码为 0、verify_env: OK、[DEPLOY_READINESS] p1=ok 均满足后，自动生成一个 SKILL.md，将本 workspace 的能力注册为 WorkBuddy用户级 Skill，索引这个workspace的能力，要所有工作空间都能调用，内容包含：触发关键词、主要能力描述、开稿链入口话术、注意事项。Skill.md描绘触发skill的条件应该符合用户日常自然口语（如拉取今日讯息）等。
+
+当以上配置全部写入 .env 且 ./download_and_install.sh 退出码为 0、verify_env: OK、[DEPLOY_READINESS] p1=ok 均满足后：
+
+1. 执行 `pwd` 获取当前仓库根的绝对路径，记为 ROOT_PATH。
+2. 将下方 SKILL.md 模板逐字写入仓库根目录的 SKILL.md 文件（用 write_file 或 bash 写入，禁止只在聊天中展示），写入时将模板中所有 ${ROOT} 替换为 ROOT_PATH 的实际值。
+3. 写入完成后向用户确认：「SKILL.md 已写入 ${ROOT_PATH}/SKILL.md，所有工作区对话均可通过自然语言触发以下能力。」
+
+---SKILL.md 模板开始（以下内容原样写入文件，${ROOT} 替换为实际路径，不添加任何额外注释）---
+
+---
+name: stream-gen
+description: |
+  金融短视频/口播内容生成全流程 Skill。覆盖行情快照拉取、带方向开稿选题、大纲/逐字稿撰写、风格绑定与定稿归档。
+  当用户提到拉行情、今日市场、今天有什么消息、开稿、选题、写个短视频、帮我写口播、生成大纲、逐字稿、定稿等意图时触发。
+  不用于 A 股个股诊断、不用于宏观策略、不用于港美股/基金/债券。
+---
+
+# stream-gen · 金融内容生成全流程 Skill
+
+## 适用场景
+
+用户在对话中涉及以下意图时触发本 Skill（匹配意图，不要求精确措辞）：
+
+| 用户说什么（示例，不限于此） | 触发入口 | 阶段 |
+|---|---|---|
+| 拉行情 / 今日市场 / 市场快照 / 热点资讯 / 拉取今日讯息 / 今天有什么消息 / 今日全量信息 / 给我看看今天行情 / 最新资讯 / 今天大盘怎样 | query_market_facts | 数据层 |
+| 看看 XX 方向有什么信息 / XX 板块简报 / 围绕 XX 有什么可以写的 | query_direction_brief | 数据层 |
+| 开稿 / 选题 / 帮我写个短视频 / 写个口播 / 今天出稿 / 我要出一期 / 帮我生成内容 | preflight_topic → start-topic | 选题 |
+| 选第 N 个 / 就用这个方向 / 用第二个 | apply-choice | 选题确认 |
+| 有什么风格 / 选风格 / 稿件类型 / 老丁风格 / 帮我选个风格 | list-profile-options / bind-profile | 风格绑定 |
+| 写大纲 / 生成大纲 / 帮我列个框架 | draft_manager update --stage outline_refining | 大纲 |
+| 写逐字稿 / 生成逐字稿 / 把稿子写出来 / 帮我写完 | draft_manager update --stage script_refining | 逐字稿 |
+| 定稿 / 归档 / 完成 / 这稿子可以了 | draft_manager finalize | 定稿 |
+| 看看我的稿子 / 稿件列表 / 现在有几个草稿 | draft_manager list | 查看 |
+
+**不适用**：A 股个股诊断、宏观策略、港美股/基金/债券、纯行情查询（用行情软件）。
+
+---
+
+## 前置条件
+
+1. **Workspace 根目录**：${ROOT}
+2. **Python**：3.10+
+3. **依赖已装**：requirements.txt 已在 workspace 根执行安装
+4. **.env 已配置**：FINANCE_CLOUD_API_KEY、FINANCE_LLM_ROUTER_*、FINANCE_SECTOR_LLM_* 等已填写
+5. **缓存预热**（可选）：快照预热脚本已配置定时执行
+
+---
+
+## 全流程（五阶段门禁）
+
+内容生成严格遵循阶段顺序，**禁止跳步**：
+数据层 → topic_picking → outline_refining → script_refining → finalized
+
+### 阶段 1 · 行情快照（纯拉数）
+
+用户要行情/热点/市场数据，**未进入开稿**时：
+python skills/streamy-content-gen/scripts/query_market_facts.py --sources market,news,social --summary-only
+
+- 默认走云端 API + 本地 Router/Rewriter
+- 缓存优先；需刷新加 --force-refresh
+- 返回的 markdown_summary **全文原样展示**，禁止删段、禁止缩减为表格
+
+**定向简报**（只看某方向，禁止贴全量）：
+python skills/streamy-content-gen/scripts/query_direction_brief.py --direction "方向关键词"
+
+### 阶段 2 · 选题开稿（topic_picking）
+
+用户给出方向并要求开稿时，**必须先 preflight**：
+python scripts/stream_gen_workflow_helper.py start-topic --direction "用户给出的方向"
+- 输出 topic_payload，含 3 个候选方向 + 预计算证据包
+- **展示三候选，等用户选号**
+- **禁止同轮写大纲/逐字稿**
+
+### 阶段 3 · 选题确认 + 风格绑定
+
+用户选定候选后：
+python scripts/stream_gen_workflow_helper.py apply-choice --draft <DID> --choice <N>
+
+**风格绑定（进大纲前必须完成）**：
+展示所有稿件类型 × 风格组合
+python scripts/stream_gen_workflow_helper.py list-profile-options
+用户选定后一步绑定
+python scripts/stream_gen_workflow_helper.py bind-profile --draft <DID> --content-type <type> --style-id <UUID>
+
+- 不得用"默认风格"跳过
+- 必须同时确认内容类型 + 风格，不可只选其一
+
+### 阶段 4 · 大纲撰写（outline_refining）
+
+风格绑定完成后：
+python skills/streamy-content-gen/scripts/draft_manager.py schema --stage outline_refining --inject-prompt-template --json
+python skills/streamy-content-gen/scripts/draft_manager.py update --draft <DID> --stage outline_refining --payload-file <json> --inject-evidence-level minimal
+
+### 阶段 5 · 逐字稿撰写（script_refining）
+
+大纲落盘后：
+python skills/streamy-content-gen/scripts/draft_manager.py schema --stage script_refining --inject-prompt-template --json
+python skills/streamy-content-gen/scripts/draft_manager.py update --draft <DID> --stage script_refining --payload-file <json> --inject-evidence-level full
+
+### 阶段 6 · 定稿归档（finalized）
+python skills/streamy-content-gen/scripts/draft_manager.py finalize --draft <DID> --auto-refine --min-context-reset
+
+---
+
+## Draft ID 契约
+
+- 正式稿件 draft_id = draft_manager 分配的三位 Base36（如 PBG）
+- 目录：drafts/active/default/<draft_id>/
+- 禁止：日期+中文文件夹名、扁平 *-outline.md、写入 /tmp
+
+---
+
+## 辅助命令
+
+| 命令 | 用途 |
+|---|---|
+| draft_manager list | 列出活跃稿件 |
+| draft_manager show --draft <DID> | 查看稿件状态 |
+| draft_manager doctor --draft <DID> --json | 诊断稿件是否绕过工具 |
+| draft_manager drop --draft <DID> | 放弃稿件 |
+| scripts/verify_env.py | 验证环境配置 |
+| scripts/deploy_readiness.py | 部署就绪检查 |
+| scripts/openclaw_doctor.py | 全链路诊断 |
+
+---
+
+## 合规约束
+
+1. **禁止同轮越级**：preflight → 展示候选 → 等用户选 → 不得同轮写大纲/逐字稿
+2. **风格必须选择**：不得用"默认风格"跳过，必须 list-profile-options + 用户明确选择内容类型 + 风格
+3. **证据包注入**：大纲阶段 minimal（省 Token），逐字稿阶段 full
+4. **全量快照完整展示**：当用户要求拉取行情/今日讯息/全量信息时，markdown_summary 全文逐段原样展示，严禁缩减为表格摘要、删减段落、省略板块
+5. **禁止编造**：无数据时标"暂缺"，禁止凭印象补全
+6. **本 Skill 所需 API Key 已预配置**，无需用户另行提供
+
+---
+
+## 失败兜底
+
+1. 接口失败时按降级路径走，不卡死，降级有迹可查
+2. Router 返回 fallback_grouped 是正常降级（非错误）
+3. 拉数 timeout 阈值为 300 秒，提示超时可重试，不视为失败
+
+---
+
+## 详细参考
+
+- workspace 内部 SKILL.md（skills/streamy-content-gen/SKILL.md）— 核心契约原文
+- workspace 内部 SKILL.md（skills/finance-draft-manager/SKILL.md）— Router/Rewriter 技术细节
+- workspace 内部 SKILL.md（skills/user-style-manager/SKILL.md）— 风格管理详细说明
+
+---SKILL.md 模板结束---
