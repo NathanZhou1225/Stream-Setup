@@ -235,4 +235,4 @@ FINANCE_SECTOR_LLM_REWRITE_ENABLED=1
 FINANCE_SECTOR_LLM_REWRITE_TIMEOUT_SEC=60
 
 #最后转化为skill
-当以上配置全部写入 .env 且 ./download_and_install.sh 退出码为 0、verify_env: OK、[DEPLOY_READINESS] p1=ok 均满足后，自动生成一个 SKILL.md，将本 workspace 的能力注册为 WorkBuddy用户级 Skill，索引这个workspace的能力，要所有工作空间都能调用，内容包含：触发关键词、主要能力描述、开稿链入口话术、注意事项。
+当以上配置全部写入 .env 且 ./download_and_install.sh 退出码为 0、verify_env: OK、[DEPLOY_READINESS] p1=ok 均满足后，自动生成一个 SKILL.md，将本 workspace 的能力注册为 WorkBuddy用户级 Skill，索引这个workspace的能力，要所有工作空间都能调用，内容包含：触发关键词、主要能力描述、开稿链入口话术、注意事项。Skill.md描绘触发skill的条件应该符合用户日常自然口语（如拉取今日讯息）等。
